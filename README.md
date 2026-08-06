@@ -21,12 +21,12 @@ If you don't have a transcript, run ASR first and feed its output here.
 
 MFA runs on Kaldi, whose supported conda build is CPU-only (`kaldi=*=cpu*` in MFA's own install docs). Alignment is GMM-HMM Viterbi search, which parallelises across **cores**, not GPU SMs. A `kaldi-cuda` package exists but is not MFA's supported path, and MFA is [moving away from Kaldi](https://github.com/MontrealCorpusTools/Montreal-Forced-Aligner) altogether.
 
-Attaching a GPU would bill roughly 5× more for hardware that sits idle:
+Attaching a GPU would roughly double the bill for hardware that sits idle, and burn GPU quota needed elsewhere:
 
 | | GPU instance | **CPU instance (this)** |
 | --- | --- | --- |
 | Config | 8 vCPU + 1× L4 | 8 vCPU |
-| Cost | ~$1.42/hour | **~$0.29/hour** |
+| Cost | ~$1.42/hour | **~$0.75/hour** |
 | GPU quota consumed | 1 per instance | **none** |
 
 Consuming no GPU quota also means this scales independently of any GPU services in the same project.
@@ -91,7 +91,9 @@ MFA's unit of work is a **corpus directory**, not a file. Every item in one requ
 }
 ```
 
-Up to **64 items** per request. Results come back in input order; one bad item does not fail the batch.
+Up to **1024 items** per request (`MFA_MAX_BATCH_ITEMS`). Results come back in input order; one bad item does not fail the batch.
+
+**Use 512.** See [Measured performance](#measured-performance) — batch size is worth ~460x.
 
 ### Input sources
 
@@ -114,11 +116,12 @@ Supply exactly one of `audio_url`, `gcs_uri`, `audio_base64`, or `audio`, plus a
 | --- | --- | --- |
 | `MFA_ACOUSTIC_MODEL` | `english_mfa` | Pretrained acoustic model (baked into the image) |
 | `MFA_DICTIONARY` | `english_mfa` | Pronunciation dictionary |
-| `MFA_NUM_JOBS` | vCPU count | **The throughput knob.** MFA parallel workers. |
+| `MFA_NUM_JOBS` | vCPU count | MFA parallel workers. |
+| `MFA_FETCH_WORKERS` | `16` | Concurrent downloads while staging the corpus |
 | `MFA_MAX_CONCURRENCY` | `1` | Alignments per instance. Keep at 1 — MFA already saturates all cores. |
 | `MFA_BEAM` / `MFA_RETRY_BEAM` | `10` / `40` | Raise if utterances fail to align |
 | `MFA_SINGLE_SPEAKER` | `true` | Faster when each file has one speaker |
-| `MFA_MAX_BATCH_ITEMS` | `64` | Items per request |
+| `MFA_MAX_BATCH_ITEMS` | `1024` | Items per request. **The most important setting** — fill it. |
 | `MFA_MAX_AUDIO_DURATION_S` | `3600` | Reject longer audio |
 | `MFA_BLOCK_PRIVATE_URLS` | `true` | SSRF guard on `audio_url` |
 | `MFA_AUTH_TOKEN` | unset | Optional shared secret; IAM is primary |
