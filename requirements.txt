@@ -1,0 +1,7 @@
+# Installed into the base image's conda env (/env), which already provides
+# montreal-forced-aligner + kaldi. Kept here for local development parity.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+requests>=2.31
+google-cloud-storage>=2.18

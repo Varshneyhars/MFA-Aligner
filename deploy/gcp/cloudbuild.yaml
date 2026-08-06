@@ -1,0 +1,38 @@
+# Build the MFA image and push it to Artifact Registry.
+#
+#   gcloud builds submit --config deploy/gcp/cloudbuild.yaml \
+#       --substitutions=_REGION=us-central1,_REPO=mfa-aligner,_IMAGE=mfa-aligner,_TAG=v1
+#
+# Smaller and faster than a GPU image — no CUDA layers, and the pretrained
+# acoustic model and dictionary are a few hundred MB rather than gigabytes.
+
+substitutions:
+  _REGION: us-central1
+  _REPO: mfa-aligner
+  _IMAGE: mfa-aligner
+  _TAG: latest
+  _ACOUSTIC_MODEL: english_mfa
+  _DICTIONARY: english_mfa
+
+options:
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 3600s
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file=Dockerfile
+      - --tag=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}
+      - --tag=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:latest
+      - --build-arg=ACOUSTIC_MODEL=${_ACOUSTIC_MODEL}
+      - --build-arg=DICTIONARY=${_DICTIONARY}
+      - .
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:${_TAG}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:latest

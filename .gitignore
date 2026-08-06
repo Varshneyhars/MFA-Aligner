@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Credentials — never commit. Keys belong in a secret manager.
+*-key.json
+*key*.json
+service-account*.json
+credentials*.json
+gcp-*.json
+*.pem
+
+# Data / outputs
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.TextGrid
+*.textgrid
+*.lab
+corpus/
+outputs/
+results.jsonl
+files.txt
+.vscode/
+.idea/
