@@ -24,6 +24,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -37,6 +38,9 @@ SAMPLE_RATE = 16000  # MFA's pretrained English models expect 16 kHz mono.
 # instance's full vCPU count here, so this scales with whatever we deploy.
 NUM_JOBS = int(os.environ.get("MFA_NUM_JOBS", str(os.cpu_count() or 4)))
 ALIGN_TIMEOUT_S = float(os.environ.get("MFA_ALIGN_TIMEOUT_S", "3000"))
+# Parallel downloads during corpus staging. Network-bound, so this can exceed
+# the core count — the CPUs are idle during this phase anyway.
+FETCH_WORKERS = int(os.environ.get("MFA_FETCH_WORKERS", "16"))
 BEAM = int(os.environ.get("MFA_BEAM", "10"))
 RETRY_BEAM = int(os.environ.get("MFA_RETRY_BEAM", "40"))
 SINGLE_SPEAKER = os.environ.get("MFA_SINGLE_SPEAKER", "true").lower() == "true"
@@ -334,17 +338,37 @@ def _read_alignment(output_dir: str, stem: str) -> Dict[str, List[Dict[str, Any]
 # --------------------------------------------------------------------------- #
 #                                 Alignment                                    #
 # --------------------------------------------------------------------------- #
-def _run_align(corpus_dir: str, output_dir: str) -> Tuple[bool, str]:
-    """Invoke MFA over a whole corpus directory in one go."""
+def _write_config(workdir: str) -> str:
+    """Beam widths go in a config file, never on the command line.
+
+    `mfa align` is declared with ignore_unknown_options + allow_extra_args, so
+    an unrecognised `--beam 10` does not error — Click routes `--beam` to extra
+    args and then consumes `10` as the next positional, i.e. as
+    CORPUS_DIRECTORY. The failure surfaces as "Corpus directory does not exist",
+    pointing nowhere near the real cause. --config_path is the supported route.
+    """
+    path = os.path.join(workdir, "align_config.yaml")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"beam: {BEAM}\nretry_beam: {RETRY_BEAM}\n")
+    return path
+
+
+def _run_align(corpus_dir: str, output_dir: str, config_path: Optional[str] = None) -> Tuple[bool, str]:
+    """Invoke MFA over a whole corpus directory in one go.
+
+    Only flags MFA actually declares may appear here — see _write_config for
+    why an unknown option is worse than an error.
+    """
     cmd = [
         "mfa", "align", "--clean", "--quiet", "--overwrite",
         "--num_jobs", str(NUM_JOBS),
-        "--beam", str(BEAM), "--retry_beam", str(RETRY_BEAM),
         "--output_format", "json",
-        corpus_dir, DICTIONARY, ACOUSTIC_MODEL, output_dir,
     ]
     if SINGLE_SPEAKER:
-        cmd.insert(2, "--single_speaker")
+        cmd.append("--single_speaker")
+    if config_path:
+        cmd += ["--config_path", config_path]
+    cmd += [corpus_dir, DICTIONARY, ACOUSTIC_MODEL, output_dir]
     try:
         p = _run(cmd, timeout=ALIGN_TIMEOUT_S)
     except subprocess.TimeoutExpired:
@@ -395,28 +419,41 @@ def align(inp: Dict[str, Any]) -> Dict[str, Any]:
     staged: List[Dict[str, Any]] = []
 
     try:
+        # Fetch in parallel. Downloading and transcoding are I/O and ffmpeg
+        # bound, and doing them one at a time leaves every core idle for the
+        # whole staging phase — measured at ~0.23s per file, which came to
+        # dominate the request once batches grew past ~128 items.
         fetch_start = time.perf_counter()
-        for i, item in enumerate(req["items"]):
+
+        def _stage(pair):
+            i, item = pair
             stem = f"utt{i:05d}"
-            try:
-                duration, kind, nbytes = _materialize(
-                    item["source"], os.path.join(corpus, f"{stem}.wav"),
-                    os.path.join(workdir, f"raw{i:05d}.bin"))
-                # MFA pairs each audio file with a .lab of the same basename.
-                with open(os.path.join(corpus, f"{stem}.lab"), "w", encoding="utf-8") as f:
-                    f.write(item["transcript"])
-                staged.append({"idx": i, "stem": stem, "duration": duration,
-                               "kind": kind, "nbytes": nbytes})
-            except InputError as e:
-                results[i] = {"error": str(e), "index": i}
-            except Exception as e:
-                print(f"[error] item {i}: {type(e).__name__}: {e}")
-                results[i] = {"error": f"{type(e).__name__}: {e}", "index": i}
+            duration, kind, nbytes = _materialize(
+                item["source"], os.path.join(corpus, f"{stem}.wav"),
+                os.path.join(workdir, f"raw{i:05d}.bin"))
+            # MFA pairs each audio file with a .lab of the same basename.
+            with open(os.path.join(corpus, f"{stem}.lab"), "w", encoding="utf-8") as f:
+                f.write(item["transcript"])
+            return {"idx": i, "stem": stem, "duration": duration,
+                    "kind": kind, "nbytes": nbytes}
+
+        with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+            futures = {pool.submit(_stage, (i, it)): i
+                       for i, it in enumerate(req["items"])}
+            for fut in as_completed(futures):
+                i = futures[fut]
+                try:
+                    staged.append(fut.result())
+                except InputError as e:
+                    results[i] = {"error": str(e), "index": i}
+                except Exception as e:
+                    print(f"[error] item {i}: {type(e).__name__}: {e}")
+                    results[i] = {"error": f"{type(e).__name__}: {e}", "index": i}
         fetch_s = time.perf_counter() - fetch_start
 
         if staged:
             align_start = time.perf_counter()
-            ok, err = _run_align(corpus, outdir)
+            ok, err = _run_align(corpus, outdir, _write_config(workdir))
             align_s = time.perf_counter() - align_start
             total_audio = sum(s["duration"] for s in staged)
 
