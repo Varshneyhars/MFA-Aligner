@@ -4,6 +4,8 @@ Word- and phone-level **forced alignment** as a serverless HTTP API. Send audio 
 
 Built on [Montreal Forced Aligner](https://github.com/MontrealCorpusTools/Montreal-Forced-Aligner) (Kaldi). Deployed on Google Cloud Run, **CPU only** — see below for why that is the right choice and not a compromise.
 
+**Integrating against this service?** See **[INTEGRATION.md](INTEGRATION.md)** — endpoint, auth, code samples, and the batching guidance that is worth ~460x.
+
 ## Forced alignment is not speech recognition
 
 This service does **not** transcribe audio. It requires a transcript and works out *when* each word was spoken.
