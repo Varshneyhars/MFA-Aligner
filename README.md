@@ -125,6 +125,50 @@ Supply exactly one of `audio_url`, `gcs_uri`, `audio_base64`, or `audio`, plus a
 
 Other languages: rebuild with `--build-arg ACOUSTIC_MODEL=... --build-arg DICTIONARY=...`. See [MFA's pretrained models](https://mfa-models.readthedocs.io/).
 
+## Measured performance
+
+On 8 vCPU, aligning 5.86s LibriSpeech clips from GCS:
+
+| Batch size | fetch | align | total | realtime |
+| --- | --- | --- | --- | --- |
+| 1 | 7.7s | 49.8s | 60.9s | **0.1x** |
+| 32 | - | 39.0s | - | 4.8x |
+| 128 | 6.5s | 62.7s | 69.3s | 10.8x |
+| 256 | 6.0s | 45.9s | 52.1s | 28.8x |
+| **512** | 11.7s | 52.8s | **64.8s** | **46.3x** |
+
+**Batch size is the single most important setting.** MFA carries a fixed
+per-invocation cost of roughly 39s — loading the acoustic model and preparing
+the corpus database — which is paid once no matter how many files are in the
+request. Aligning one file at a time runs at 0.1x realtime; aligning 512 at a
+time runs at 46x. That is a ~460x difference for identical audio.
+
+Fitted from the 256/512 measurements: `align_seconds ~= 39 + 0.0046 x audio_seconds`.
+The marginal cost is small enough that throughput keeps improving with batch
+size well past 512.
+
+Corpus staging runs 16 downloads concurrently (`MFA_FETCH_WORKERS`). Serially it
+was ~0.23s per file and dominated large requests while every core sat idle —
+at 512 items that was ~106s of the request, now ~12s.
+
+### Sizing a bulk run
+
+For N files of average duration D, with batches of B:
+
+```text
+batches       = N / B
+per batch     ~= 39 + 0.0046 x (B x D)  seconds
+wall clock    ~= batches / instances x per_batch
+instance cost  = $0.000208/second  (8 vCPU + 32 GiB)
+```
+
+Worked example — 12,000 files averaging 19s, batches of 512, 24 instances:
+roughly **24 batches, ~96s each, ~2 minutes wall clock, well under $1**.
+
+Numbers measured on uniform test clips; real corpora of varied length and
+vocabulary will differ, so treat these as a planning baseline rather than a
+guarantee.
+
 ## Architecture notes
 
 **PostgreSQL.** MFA 3.x keeps corpus state in a PostgreSQL instance it manages itself. `entrypoint.sh` starts it before uvicorn, and `/ready` reports failure rather than crash-looping so problems are debuggable from logs.
